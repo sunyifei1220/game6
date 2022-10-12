@@ -7,6 +7,7 @@
 
 #include <vector>
 #include <deque>
+#include "Scene.hpp"
 
 struct PlayMode : Mode {
 	PlayMode(Client &client);
@@ -31,4 +32,9 @@ struct PlayMode : Mode {
 	//connection to server:
 	Client &client;
 
+	Scene scene;
+
+
+	//camera:
+	Scene::Camera* camera = nullptr;
 };

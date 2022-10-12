@@ -5,6 +5,7 @@
 #include <string>
 #include <list>
 #include <random>
+#include <ctime>
 
 struct Connection;
 
@@ -28,7 +29,7 @@ struct Button {
 struct Player {
 	//player inputs (sent from client):
 	struct Controls {
-		Button left, right, up, down, jump;
+		Button left, right, up, down, jump, mouse;
 
 		void send_controls_message(Connection *connection) const;
 
@@ -44,6 +45,9 @@ struct Player {
 
 	glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f);
 	std::string name = "";
+	int click = 0;
+	int score = 0;
+	bool explode_stat = false;
 };
 
 struct Game {
@@ -56,6 +60,10 @@ struct Game {
 
 	Game();
 
+	int explode;
+	int total_clicks;
+	bool exploded = false;
+	time_t explode_time;
 	//state update function:
 	void update(float elapsed);
 

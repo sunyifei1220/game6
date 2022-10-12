@@ -12,7 +12,7 @@ void Player::Controls::send_controls_message(Connection *connection_) const {
 	assert(connection_);
 	auto &connection = *connection_;
 
-	uint32_t size = 5;
+	uint32_t size = 6;
 	connection.send(Message::C2S_Controls);
 	connection.send(uint8_t(size));
 	connection.send(uint8_t(size >> 8));
@@ -30,6 +30,7 @@ void Player::Controls::send_controls_message(Connection *connection_) const {
 	send_button(up);
 	send_button(down);
 	send_button(jump);
+	send_button(mouse);
 }
 
 bool Player::Controls::recv_controls_message(Connection *connection_) {
@@ -44,7 +45,7 @@ bool Player::Controls::recv_controls_message(Connection *connection_) {
 	uint32_t size = (uint32_t(recv_buffer[3]) << 16)
 	              | (uint32_t(recv_buffer[2]) << 8)
 	              |  uint32_t(recv_buffer[1]);
-	if (size != 5) throw std::runtime_error("Controls message with size " + std::to_string(size) + " != 5!");
+	if (size != 6) throw std::runtime_error("Controls message with size " + std::to_string(size) + " != 5!");
 	
 	//expecting complete message:
 	if (recv_buffer.size() < 4 + size) return false;
@@ -64,7 +65,7 @@ bool Player::Controls::recv_controls_message(Connection *connection_) {
 	recv_button(recv_buffer[4+2], &up);
 	recv_button(recv_buffer[4+3], &down);
 	recv_button(recv_buffer[4+4], &jump);
-
+	recv_button(recv_buffer[4+5], &mouse);
 	//delete message from buffer:
 	recv_buffer.erase(recv_buffer.begin(), recv_buffer.begin() + 4 + size);
 
@@ -75,6 +76,7 @@ bool Player::Controls::recv_controls_message(Connection *connection_) {
 //-----------------------------------------
 
 Game::Game() : mt(0x15466666) {
+	explode = rand() % 10;
 }
 
 Player *Game::spawn_player() {
@@ -93,7 +95,7 @@ Player *Game::spawn_player() {
 	player.color = glm::normalize(player.color);
 
 	player.name = "Player " + std::to_string(next_player_number++);
-
+	explode = explode + rand() % 10;
 	return &player;
 }
 
@@ -111,36 +113,27 @@ void Game::remove_player(Player *player) {
 
 void Game::update(float elapsed) {
 	//position/velocity update:
+	time_t now;
+	time(&now);
+	if (exploded && static_cast<long>(now) - static_cast<long>(explode_time) < 5) return;
+	total_clicks = 0;
 	for (auto &p : players) {
-		glm::vec2 dir = glm::vec2(0.0f, 0.0f);
-		if (p.controls.left.pressed) dir.x -= 1.0f;
-		if (p.controls.right.pressed) dir.x += 1.0f;
-		if (p.controls.down.pressed) dir.y -= 1.0f;
-		if (p.controls.up.pressed) dir.y += 1.0f;
-
-		if (dir == glm::vec2(0.0f)) {
-			//no inputs: just drift to a stop
-			float amt = 1.0f - std::pow(0.5f, elapsed / (PlayerAccelHalflife * 2.0f));
-			p.velocity = glm::mix(p.velocity, glm::vec2(0.0f,0.0f), amt);
-		} else {
-			//inputs: tween velocity to target direction
-			dir = glm::normalize(dir);
-
-			float amt = 1.0f - std::pow(0.5f, elapsed / PlayerAccelHalflife);
-
-			//accelerate along velocity (if not fast enough):
-			float along = glm::dot(p.velocity, dir);
-			if (along < PlayerSpeed) {
-				along = glm::mix(along, PlayerSpeed, amt);
-			}
-
-			//damp perpendicular velocity:
-			float perp = glm::dot(p.velocity, glm::vec2(-dir.y, dir.x));
-			perp = glm::mix(perp, 0.0f, amt);
-
-			p.velocity = dir * along + glm::vec2(-dir.y, dir.x) * perp;
+		if (exploded && static_cast<long>(now) - static_cast<long>(explode_time) >= 5) {
+			p.click = 0;
+			p.explode_stat = false;
+			continue;
 		}
-		p.position += p.velocity * elapsed;
+		p.click += p.controls.mouse.downs;
+		total_clicks += p.click;
+		p.score += p.controls.mouse.downs;
+		if (p.controls.mouse.downs > 0 && total_clicks >= explode) {
+			p.explode_stat = true;
+			int penalty = 10 > (p.score / 2) ? 10 : p.score / 2;
+			p.score -= penalty;
+			time(&explode_time);
+			exploded = true;
+			break;
+		}
 
 		//reset 'downs' since controls have been handled:
 		p.controls.left.downs = 0;
@@ -148,8 +141,12 @@ void Game::update(float elapsed) {
 		p.controls.up.downs = 0;
 		p.controls.down.downs = 0;
 		p.controls.jump.downs = 0;
+		p.controls.mouse.downs = 0;
 	}
-
+	if (exploded && static_cast<long>(now) - static_cast<long>(explode_time) >= 5) {
+		explode = rand() % (players.size() * 10);
+		exploded = false;
+	}
 	//collision resolution:
 	for (auto &p1 : players) {
 		//player/player collisions:
@@ -205,16 +202,18 @@ void Game::send_state_message(Connection *connection_, Player *connection_player
 		connection.send(player.position);
 		connection.send(player.velocity);
 		connection.send(player.color);
-	
+		connection.send(player.score);
+		connection.send(player.explode_stat);
 		//NOTE: can't just 'send(name)' because player.name is not plain-old-data type.
 		//effectively: truncates player name to 255 chars
 		uint8_t len = uint8_t(std::min< size_t >(255, player.name.size()));
 		connection.send(len);
 		connection.send_buffer.insert(connection.send_buffer.end(), player.name.begin(), player.name.begin() + len);
 	};
-
+	
 	//player count:
 	connection.send(uint8_t(players.size()));
+	connection.send(uint8_t(total_clicks));
 	if (connection_player) send_player(*connection_player);
 	for (auto const &player : players) {
 		if (&player == connection_player) continue;
@@ -252,14 +251,18 @@ bool Game::recv_state_message(Connection *connection_) {
 	};
 
 	players.clear();
-	uint8_t player_count;
+	uint8_t player_count, clicks;
 	read(&player_count);
+	read(&clicks);
+	total_clicks = clicks;
 	for (uint8_t i = 0; i < player_count; ++i) {
 		players.emplace_back();
 		Player &player = players.back();
 		read(&player.position);
 		read(&player.velocity);
 		read(&player.color);
+		read(&player.score);
+		read(&player.explode_stat);
 		uint8_t name_len;
 		read(&name_len);
 		//n.b. would probably be more efficient to directly copy from recv_buffer, but I think this is clearer:
